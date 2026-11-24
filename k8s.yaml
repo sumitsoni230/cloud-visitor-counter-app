@@ -1,0 +1,224 @@
+# ==============================================================================
+# Complete Kubernetes Manifest for Visitor Counter Web Application
+# Components: Namespace, ConfigMap, Redis (PVC + Deployment + Service), 
+#             Flask Webapp (Deployment + Service)
+# ==============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: visitor-app
+  labels:
+    app.kubernetes.io/name: visitor-counter
+    app.kubernetes.io/part-of: cloud-project
+
+---
+# ------------------------------------------------------------------------------
+# ConfigMap for Application Environment Variables
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-config
+  namespace: visitor-app
+data:
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  CLUSTER_NAME: "Minikube-Primary-Cluster"
+  ENVIRONMENT: "On-Premises / Primary Production"
+  APP_VERSION: "v1.0.0"
+
+---
+# ------------------------------------------------------------------------------
+# PersistentVolumeClaim for Redis Storage
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: visitor-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# ------------------------------------------------------------------------------
+# Redis Deployment (Stateful In-Memory Cache)
+# ------------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-deployment
+  namespace: visitor-app
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - "--appendonly"
+            - "yes"
+          ports:
+            - containerPort: 6379
+              name: redis-port
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          volumeMounts:
+            - name: redis-storage
+              mountPath: /data
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+      volumes:
+        - name: redis-storage
+          persistentVolumeClaim:
+            claimName: redis-pvc
+
+---
+# ------------------------------------------------------------------------------
+# Redis ClusterIP Service
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: visitor-app
+  labels:
+    app: redis
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+      name: redis
+  selector:
+    app: redis
+
+---
+# ------------------------------------------------------------------------------
+# Flask Web Application Deployment (Stateless, Replicated & Resilient)
+# ------------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-deployment
+  namespace: visitor-app
+  labels:
+    app: webapp
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+        - name: webapp
+          image: visitor-counter-app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: webapp-config
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          # Resource requests and limits are mandatory for HPA autoscaling
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+---
+# ------------------------------------------------------------------------------
+# Flask Web Application Service (NodePort + LoadBalancer support)
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+  namespace: visitor-app
+  labels:
+    app: webapp
+spec:
+  type: NodePort
+  ports:
+    - port: 5000
+      targetPort: 5000
+      nodePort: 30080
+      protocol: TCP
+      name: http
+  selector:
+    app: webapp

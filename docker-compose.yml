@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # Flask Web Application Service
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: visitor-counter-app:latest
+    container_name: visitor-web
+    ports:
+      - "5000:5000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CLUSTER_NAME=Docker-Compose-Local
+      - ENVIRONMENT=Containerized-Development
+      - APP_VERSION=v1.0.0
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    restart: unless-stopped
+    networks:
+      - visitor-net
+
+  # Redis In-Memory Data Store Service
+  redis:
+    image: redis:7.2-alpine
+    container_name: visitor-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - visitor-net
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  visitor-net:
+    driver: bridge
